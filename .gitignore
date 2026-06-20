@@ -1,0 +1,21 @@
+﻿# Python
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.py[cod]
+backend/data/
+backend/*.log
+backend/*.err.log
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.npm-cache/
+frontend/*.log
+frontend/*.err.log
+frontend/src.zip
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
