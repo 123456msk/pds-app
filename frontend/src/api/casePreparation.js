@@ -1,4 +1,4 @@
-import JSZip from 'jszip';
+﻿import JSZip from 'jszip';
 
 async function buildDicomZip(entries, label, onProgress) {
   if (!entries.length) {
@@ -55,4 +55,10 @@ export async function segmentPreparedCase(caseId, onProgress) {
 }
 export function resultFileUrl(caseId, filename) {
   return `http://127.0.0.1:8100/api/cases/${caseId}/results/${encodeURIComponent(filename)}`;
+}
+export async function predictPreparedCase(caseId) {
+  const response = await fetch(`http://127.0.0.1:8100/api/cases/${caseId}/predict`, { method: 'POST' });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'AI 预测失败。');
+  return payload;
 }

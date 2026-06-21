@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="ringGrad" x1="180" y1="820" x2="820" y2="180" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A56D0"/>
+      <stop offset="1" stop-color="#62A9F8"/>
+    </linearGradient>
+    <linearGradient id="bedGrad" x1="380" y1="880" x2="645" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A6CCF8"/>
+      <stop offset="1" stop-color="#4E96F2"/>
+    </linearGradient>
+    <linearGradient id="organGrad" x1="345" y1="650" x2="720" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0D93A7"/>
+      <stop offset="1" stop-color="#5FD0DA"/>
+    </linearGradient>
+    <filter id="softShadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#softShadow)">
+    <!-- Outer MRI ring -->
+    <path d="M232 792A392 392 0 1 1 792 792" stroke="url(#ringGrad)" stroke-width="56" stroke-linecap="round"/>
+
+    <!-- Inner MRI arc -->
+    <path d="M336 690A258 258 0 0 1 687 690" stroke="url(#ringGrad)" stroke-width="18" stroke-linecap="round"/>
+    <path d="M687 690A258 258 0 0 0 336 690" stroke="url(#ringGrad)" stroke-width="18" stroke-linecap="round" opacity="0"/>
+    <path d="M336 690A258 258 0 0 1 688 690" stroke="url(#ringGrad)" stroke-width="18" stroke-linecap="round" fill="none"/>
+    <!-- mask lower gap with white patches -->
+    <rect x="286" y="676" width="90" height="70" fill="white"/>
+    <rect x="650" y="676" width="90" height="70" fill="white"/>
+
+    <!-- Scanner marks -->
+    <rect x="491" y="145" width="26" height="86" rx="13" fill="#176FE0"/>
+    <rect x="136" y="483" width="86" height="26" rx="13" fill="#176FE0"/>
+    <rect x="802" y="483" width="86" height="26" rx="13" fill="#176FE0"/>
+
+    <!-- Bottom rails -->
+    <path d="M281 896L404 706C414 690 431 680 451 680H501L388 896H281Z" fill="url(#ringGrad)"/>
+    <path d="M743 896L620 706C610 690 593 680 573 680H523L636 896H743Z" fill="url(#ringGrad)"/>
+
+    <!-- Bed platform -->
+    <path d="M422 743H602L655 822H370L422 743Z" fill="url(#bedGrad)"/>
+    <path d="M402 800H622L648 850H376L402 800Z" fill="url(#bedGrad)" opacity="0.85"/>
+
+    <!-- Organ/prostate -->
+    <path d="M514 422C465 381 391 382 347 425C299 472 302 544 330 595C350 631 385 657 419 684C447 706 471 740 479 772C484 794 509 802 523 785C533 773 537 756 537 736V717C537 704 548 694 562 693C597 691 628 679 660 652C722 598 763 531 730 469C697 408 627 397 574 426C551 439 529 439 514 422Z" fill="url(#organGrad)"/>
+
+    <!-- AI network -->
+    <g stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="394" y1="561" x2="454" y2="489"/>
+      <line x1="454" y1="489" x2="515" y2="561"/>
+      <line x1="394" y1="561" x2="515" y2="561"/>
+      <line x1="454" y1="489" x2="537" y2="489"/>
+      <line x1="537" y1="489" x2="537" y2="626"/>
+      <line x1="454" y1="489" x2="477" y2="635"/>
+      <line x1="394" y1="561" x2="477" y2="635"/>
+      <line x1="477" y1="635" x2="537" y2="626"/>
+      <line x1="477" y1="635" x2="537" y2="684"/>
+      <line x1="537" y1="626" x2="537" y2="684"/>
+    </g>
+    <g fill="white">
+      <circle cx="394" cy="561" r="17"/>
+      <circle cx="454" cy="489" r="17"/>
+      <circle cx="515" cy="561" r="17"/>
+      <circle cx="537" cy="489" r="17"/>
+      <circle cx="477" cy="635" r="17"/>
+      <circle cx="537" cy="626" r="14"/>
+      <circle cx="537" cy="684" r="17"/>
+    </g>
+
+    <!-- Segmentation dashed contour -->
+    <path d="M569 457C611 434 654 430 687 452C719 472 728 510 724 552C720 599 694 636 657 671C629 697 604 723 578 742C562 753 543 746 539 725C535 703 539 659 539 631V536" stroke="white" stroke-width="14" stroke-linecap="round" stroke-dasharray="30 22" fill="none"/>
+  </g>
+</svg>
