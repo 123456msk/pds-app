@@ -57,8 +57,14 @@
                 :class="{ selected: volume.id === activeImageId }"
                 @click="activateImage(volume.id)"
               >
-                <button class="collapse-button" type="button" @click.stop="toggleImageGroup(volume.id)">
-                  {{ collapsedImageIds.has(volume.id) ? '›' : '⌄' }}
+                <button
+                  class="collapse-button"
+                  :class="{ collapsed: collapsedImageIds.has(volume.id) }"
+                  type="button"
+                  :title="collapsedImageIds.has(volume.id) ? '展开' : '折叠'"
+                  @click.stop="toggleImageGroup(volume.id)"
+                >
+                  <span></span>
                 </button>
                 <span class="node-chip image">I</span>
                 <span class="node-main">
@@ -111,6 +117,33 @@
           <div v-if="!image" class="editor-empty">
             将 NIfTI 文件或 ZIP 结果包拖入这里，或点击顶部“添加数据”。
           </div>
+
+          <article
+            v-show="image"
+            class="plane-panel volume-3d"
+            :class="{ fullscreen: fullscreenPlane === 'volume-3d', concealed: fullscreenPlane && fullscreenPlane !== 'volume-3d' }"
+          >
+            <header class="plane-header">
+              <span>3D 掩膜视图</span>
+              <div class="plane-actions">
+                <button type="button" title="复位视角" @click="reset3DView">↺</button>
+                <button type="button" :title="fullscreenPlane === 'volume-3d' ? '退出全屏' : '局部全屏'" @click="togglePlaneFullscreen('volume-3d')">
+                  {{ fullscreenPlane === 'volume-3d' ? '↙' : '⛶' }}
+                </button>
+              </div>
+            </header>
+            <div ref="threeContainer" class="three-stage">
+              <div v-if="!visibleMasksForActiveImage.length" class="three-empty">显示 Mask 后生成三维表面</div>
+              <div class="orientation-cube">
+                <span class="top">S</span>
+                <span class="bottom">I</span>
+                <span class="left">R</span>
+                <span class="right">L</span>
+                <span class="center">P</span>
+              </div>
+            </div>
+            <footer class="three-footer">左键旋转 · 滚轮缩放 · 右键平移</footer>
+          </article>
 
           <article
             v-for="plane in planeList"
@@ -234,6 +267,8 @@
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import JSZip from 'jszip';
 import pako from 'pako';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 const palette = ['#36a9e1', '#f3c74f', '#36c98f', '#ef7fa0', '#a78bfa', '#fb923c', '#22d3ee', '#e879f9'];
 const tools = [
@@ -259,6 +294,7 @@ const selectedMask = computed(() => {
   const mask = masks.value.find(item => item.id === selectedMaskId.value);
   return mask?.imageId === activeImageId.value ? mask : null;
 });
+const visibleMasksForActiveImage = computed(() => masks.value.filter(mask => mask.imageId === activeImageId.value && mask.visible));
 const cursor = reactive({ x: 0, y: 0, z: 0 });
 const zooms = reactive({ axial: 1, coronal: 1, sagittal: 1 });
 const brightness = ref(1);
@@ -276,8 +312,19 @@ const dragOver = ref(false);
 const drawing = ref(false);
 const activePlane = ref('');
 const translateDrag = ref(null);
+const threeContainer = ref(null);
 const canvases = {};
 let renderFrame = 0;
+let threeRenderer = null;
+let threeScene = null;
+let threeCamera = null;
+let threeControls = null;
+let threeMaskGroup = null;
+let threeAnimationFrame = 0;
+let threeResizeObserver = null;
+let threeRefreshFrame = 0;
+let threeRefreshTimer = 0;
+let threeRefreshIdle = 0;
 
 function setCanvasRef(key, element) {
   if (element) canvases[key] = element;
@@ -304,7 +351,184 @@ function toggleImageGroup(imageId) {
 
 function togglePlaneFullscreen(plane) {
   fullscreenPlane.value = fullscreenPlane.value === plane ? '' : plane;
-  nextTick(() => scheduleRenderAll());
+  nextTick(() => {
+    scheduleRenderAll();
+    resize3DRenderer();
+  });
+}
+
+function setup3DRenderer() {
+  if (!threeContainer.value || threeRenderer) return;
+  threeScene = new THREE.Scene();
+  threeScene.background = new THREE.Color(0x060a12);
+  threeCamera = new THREE.PerspectiveCamera(38, 1, 0.1, 4000);
+  threeCamera.position.set(120, 100, 150);
+
+  threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  threeRenderer.outputColorSpace = THREE.SRGBColorSpace;
+  threeContainer.value.prepend(threeRenderer.domElement);
+
+  threeControls = new OrbitControls(threeCamera, threeRenderer.domElement);
+  threeControls.enableDamping = true;
+  threeControls.dampingFactor = 0.08;
+  threeControls.target.set(0, 0, 0);
+
+  threeScene.add(new THREE.HemisphereLight(0xffffff, 0x263550, 2.3));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.5);
+  keyLight.position.set(2, 3, 4);
+  threeScene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(0x7dd3fc, 1.4);
+  fillLight.position.set(-3, -1, 2);
+  threeScene.add(fillLight);
+
+  threeMaskGroup = new THREE.Group();
+  threeScene.add(threeMaskGroup);
+  resize3DRenderer();
+  animate3D();
+}
+
+function animate3D() {
+  if (!threeRenderer || !threeScene || !threeCamera) return;
+  threeAnimationFrame = requestAnimationFrame(animate3D);
+  threeControls?.update();
+  threeRenderer.render(threeScene, threeCamera);
+}
+
+function resize3DRenderer() {
+  if (!threeRenderer || !threeContainer.value || !threeCamera) return;
+  const width = Math.max(1, threeContainer.value.clientWidth);
+  const height = Math.max(1, threeContainer.value.clientHeight);
+  threeRenderer.setSize(width, height, false);
+  threeCamera.aspect = width / height;
+  threeCamera.updateProjectionMatrix();
+}
+
+function refresh3DScene() {
+  if (!threeRenderer || !threeMaskGroup || !image.value) return;
+  disposeThreeGroup(threeMaskGroup);
+  const source = image.value;
+  const [, nx, ny, nz] = source.dim;
+  const [sx, sy, sz] = source.pixdim;
+
+  for (const mask of visibleMasksForActiveImage.value) {
+    const surfaceVoxels = collectSurfaceVoxels(mask, nx, ny, nz);
+    if (!surfaceVoxels.length) continue;
+    const stride = Math.max(1, Math.ceil(surfaceVoxels.length / 14000));
+    const count = Math.ceil(surfaceVoxels.length / stride);
+    const material = new THREE.MeshStandardMaterial({
+      color: mask.color,
+      transparent: true,
+      opacity: Math.max(0.18, mask.opacity),
+      roughness: 0.62,
+      metalness: 0.03,
+    });
+    const geometry = new THREE.BoxGeometry(sx, sy, sz);
+    const mesh = new THREE.InstancedMesh(geometry, material, count);
+    const matrix = new THREE.Matrix4();
+    let instanceIndex = 0;
+    for (let index = 0; index < count; index++) {
+      const sampleIndex = stride === 1
+        ? index
+        : Math.floor(((index * 0.61803398875) % 1) * surfaceVoxels.length);
+      const voxelIndex = surfaceVoxels[sampleIndex];
+      const z = Math.floor(voxelIndex / (nx * ny));
+      const remainder = voxelIndex - z * nx * ny;
+      const y = Math.floor(remainder / nx);
+      const x = remainder - y * nx;
+      matrix.makeTranslation(
+        (x - nx / 2) * sx,
+        (z - nz / 2) * sz,
+        (y - ny / 2) * sy,
+      );
+      mesh.setMatrixAt(instanceIndex++, matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    threeMaskGroup.add(mesh);
+  }
+  frame3DScene();
+}
+
+function schedule3DRefresh() {
+  if (threeRefreshFrame) cancelAnimationFrame(threeRefreshFrame);
+  if (threeRefreshTimer) clearTimeout(threeRefreshTimer);
+  if (threeRefreshIdle && window.cancelIdleCallback) window.cancelIdleCallback(threeRefreshIdle);
+  threeRefreshFrame = 0;
+  threeRefreshIdle = 0;
+  threeRefreshTimer = window.setTimeout(() => {
+    threeRefreshTimer = 0;
+    const refresh = () => {
+      threeRefreshIdle = 0;
+      refresh3DScene();
+    };
+    if (window.requestIdleCallback) {
+      threeRefreshIdle = window.requestIdleCallback(refresh, { timeout: 500 });
+    } else {
+      threeRefreshFrame = requestAnimationFrame(() => {
+        threeRefreshFrame = 0;
+        refresh();
+      });
+    }
+  }, 120);
+}
+
+function collectSurfaceVoxels(mask, nx, ny, nz) {
+  const result = [];
+  const sliceSize = nx * ny;
+  const activeIndices = mask.activeIndices || collectActiveIndices(mask.data);
+  for (let cursor = 0; cursor < activeIndices.length; cursor++) {
+    const index = activeIndices[cursor];
+    const z = Math.floor(index / sliceSize);
+    const remainder = index - z * sliceSize;
+    const y = Math.floor(remainder / nx);
+    const x = remainder - y * nx;
+    const surface = x === 0 || x === nx - 1 || y === 0 || y === ny - 1 || z === 0 || z === nz - 1
+      || mask.data[index - 1] <= 0 || mask.data[index + 1] <= 0
+      || mask.data[index - nx] <= 0 || mask.data[index + nx] <= 0
+      || mask.data[index - sliceSize] <= 0 || mask.data[index + sliceSize] <= 0;
+    if (surface) result.push(index);
+  }
+  return result;
+}
+
+function frame3DScene() {
+  if (!threeCamera || !threeControls || !image.value) return;
+  const [, nx, ny, nz] = image.value.dim;
+  const [sx, sy, sz] = image.value.pixdim;
+  const radius = Math.max(nx * sx, ny * sy, nz * sz) * 0.72;
+  threeCamera.position.set(radius, radius * 0.72, radius * 1.15);
+  threeControls.target.set(0, 0, 0);
+  threeControls.update();
+}
+
+function reset3DView() {
+  frame3DScene();
+}
+
+function disposeThreeGroup(group) {
+  while (group.children.length) {
+    const child = group.children.pop();
+    child.geometry?.dispose();
+    if (Array.isArray(child.material)) child.material.forEach(material => material.dispose());
+    else child.material?.dispose();
+  }
+}
+
+function destroy3DRenderer() {
+  if (threeAnimationFrame) cancelAnimationFrame(threeAnimationFrame);
+  if (threeRefreshFrame) cancelAnimationFrame(threeRefreshFrame);
+  if (threeRefreshTimer) clearTimeout(threeRefreshTimer);
+  if (threeRefreshIdle && window.cancelIdleCallback) window.cancelIdleCallback(threeRefreshIdle);
+  threeResizeObserver?.disconnect();
+  threeControls?.dispose();
+  if (threeMaskGroup) disposeThreeGroup(threeMaskGroup);
+  threeRenderer?.dispose();
+  threeRenderer?.domElement.remove();
+  threeRenderer = null;
+  threeScene = null;
+  threeCamera = null;
+  threeControls = null;
+  threeMaskGroup = null;
 }
 
 function stripExtension(name) {
@@ -510,6 +734,7 @@ async function importSceneFiles(inputFiles) {
     if (errors.length) window.alert(`部分文件未导入：\n${errors.join('\n')}`);
     await nextTick();
     renderAll();
+    schedule3DRefresh();
   } finally {
     setLoading(false);
   }
@@ -559,6 +784,7 @@ function addMaskVolume(entry) {
   const data = new Float32Array(parsed.data.length);
   for (let index = 0; index < parsed.data.length; index++) data[index] = parsed.data[index] > 0 ? 1 : 0;
   const voxelCount = countMaskVoxels(data);
+  const activeIndices = collectActiveIndices(data);
   const mask = {
     id: `mask_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     imageId: owner.id,
@@ -573,6 +799,7 @@ function addMaskVolume(entry) {
     opacity: 0.6,
     sourceDatatype: parsed.datatypeLabel,
     voxelCount,
+    activeIndices: markRaw(activeIndices),
     volume: voxelCount * owner.pixdim[0] * owner.pixdim[1] * owner.pixdim[2] / 1000,
   };
   masks.value.push(mask);
@@ -596,6 +823,7 @@ function activateImage(imageId) {
   selectedMaskId.value = masks.value.find(mask => mask.imageId === imageId)?.id || '';
   Object.assign(zooms, { axial: 1, coronal: 1, sagittal: 1 });
   scheduleRenderAll();
+  schedule3DRefresh();
 }
 
 function selectMask(mask) {
@@ -629,6 +857,7 @@ function removeImage(volume) {
     for (const canvas of Object.values(canvases)) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
   }
   setStatus(`图像 ${stripExtension(volume.name)} 已移除`);
+  schedule3DRefresh();
 }
 
 function planeMax(plane) {
@@ -715,12 +944,15 @@ function renderPlane(plane) {
   canvas.height = height;
 
   const frame = context.createImageData(width, height);
+  const previewDelta = translateDrag.value?.delta || null;
   const visibleMasks = masks.value
     .filter(mask => mask.visible && mask.imageId === activeImageId.value)
     .map(mask => ({
+      id: mask.id,
       data: mask.data,
       opacity: mask.opacity,
       rgb: hexToRgb(mask.color),
+      delta: mask.id === selectedMaskId.value ? previewDelta : null,
     }));
   const min = source.windowMin;
   const max = source.windowMax;
@@ -735,7 +967,15 @@ function renderPlane(plane) {
       let green = intensity;
       let blue = intensity;
       for (const mask of visibleMasks) {
-        if (mask.data[voxelIndex] <= 0) continue;
+        let maskIndex = voxelIndex;
+        if (mask.delta) {
+          const sourceX = voxel.x - mask.delta.dx;
+          const sourceY = voxel.y - mask.delta.dy;
+          const sourceZ = voxel.z - mask.delta.dz;
+          if (sourceX < 0 || sourceX >= nx || sourceY < 0 || sourceY >= ny || sourceZ < 0 || sourceZ >= nz) continue;
+          maskIndex = sourceZ * nx * ny + sourceY * nx + sourceX;
+        }
+        if (mask.data[maskIndex] <= 0) continue;
         const color = mask.rgb;
         red = red * (1 - mask.opacity) + color.r * mask.opacity;
         green = green * (1 - mask.opacity) + color.g * mask.opacity;
@@ -750,7 +990,56 @@ function renderPlane(plane) {
   }
   context.putImageData(frame, 0, 0);
   if (showGrid.value) drawGrid(plane, context, width, height);
+  if (mode.value === 'translate' && selectedMask.value) {
+    drawSelectionBox(plane, context, width, height, toVoxel, selectedMask.value, previewDelta);
+  }
   fitCanvas(plane, canvas, width, height);
+}
+
+function drawSelectionBox(plane, context, width, height, toVoxel, mask, delta = null) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  const [, nx, ny, nz] = image.value.dim;
+  for (let v = 0; v < height; v++) {
+    for (let u = 0; u < width; u++) {
+      const voxel = toVoxel(u, v);
+      const sourceX = voxel.x - (delta?.dx || 0);
+      const sourceY = voxel.y - (delta?.dy || 0);
+      const sourceZ = voxel.z - (delta?.dz || 0);
+      if (sourceX < 0 || sourceX >= nx || sourceY < 0 || sourceY >= ny || sourceZ < 0 || sourceZ >= nz) continue;
+      const voxelIndex = sourceZ * nx * ny + sourceY * nx + sourceX;
+      if (mask.data[voxelIndex] <= 0) continue;
+      minX = Math.min(minX, u);
+      minY = Math.min(minY, v);
+      maxX = Math.max(maxX, u);
+      maxY = Math.max(maxY, v);
+    }
+  }
+  if (maxX < minX || maxY < minY) return;
+  const padding = 3;
+  minX = Math.max(0, minX - padding);
+  minY = Math.max(0, minY - padding);
+  maxX = Math.min(width - 1, maxX + padding);
+  maxY = Math.min(height - 1, maxY + padding);
+  context.save();
+  context.strokeStyle = '#facc15';
+  context.fillStyle = '#facc15';
+  context.lineWidth = 1.5;
+  context.setLineDash([]);
+  context.strokeRect(minX + 0.5, minY + 0.5, maxX - minX, maxY - minY);
+  const handles = [
+    [minX, minY],
+    [maxX, minY],
+    [minX, maxY],
+    [maxX, maxY],
+  ];
+  for (const [x, y] of handles) context.fillRect(x - 2, y - 2, 5, 5);
+  context.fillStyle = 'rgba(250,204,21,.92)';
+  context.font = '10px "Segoe UI"';
+  context.fillText(mask.name, minX + 4, Math.max(11, minY - 5));
+  context.restore();
 }
 
 function drawGrid(plane, context, width, height) {
@@ -827,16 +1116,34 @@ function handleCanvasDown(event, plane) {
     return;
   }
   if (!selectedMask.value) return;
-  saveUndo();
   if (mode.value === 'translate') {
-    translateDrag.value = { plane, start: canvasPoint(event, plane) };
+    saveUndo(true);
+    const start = canvasPoint(event, plane);
+    translateDrag.value = {
+      plane,
+      start,
+      current: start,
+      delta: { dx: 0, dy: 0, dz: 0 },
+    };
     return;
   }
+  saveUndo();
   drawing.value = true;
   paintAt(event, plane);
 }
 
 function handleCanvasMove(event, plane) {
+  if (translateDrag.value && translateDrag.value.plane === plane) {
+    const current = canvasPoint(event, plane);
+    translateDrag.value.current = current;
+    translateDrag.value.delta = translationDelta(
+      plane,
+      current.x - translateDrag.value.start.x,
+      current.y - translateDrag.value.start.y,
+    );
+    scheduleRenderAll();
+    return;
+  }
   if (!drawing.value || activePlane.value !== plane) return;
   paintAt(event, plane);
 }
@@ -864,51 +1171,66 @@ function paintAt(event, plane) {
 
 function handlePointerUp(event) {
   if (translateDrag.value) {
-    const { plane, start } = translateDrag.value;
-    const end = canvasPoint(event, plane);
-    translateMask(plane, end.x - start.x, end.y - start.y);
+    const delta = translateDrag.value.delta;
     translateDrag.value = null;
+    translateMask(delta);
   }
   if (drawing.value) {
     drawing.value = false;
     updateMaskVolume(selectedMask.value);
+    schedule3DRefresh();
     setStatus('掩膜已修改，尚未保存', true);
   }
 }
 
-function translateMask(plane, deltaU, deltaV) {
+function translationDelta(plane, deltaU, deltaV) {
+  if (plane === 'axial') return { dx: deltaU, dy: deltaV, dz: 0 };
+  if (plane === 'coronal') return { dx: deltaU, dy: 0, dz: -deltaV };
+  return { dx: 0, dy: deltaU, dz: -deltaV };
+}
+
+function translateMask(delta) {
   const mask = selectedMask.value;
-  if (!mask || (!deltaU && !deltaV)) return;
-  const [, nx, ny, nz] = image.value.dim;
-  let dx = 0; let dy = 0; let dz = 0;
-  if (plane === 'axial') { dx = deltaU; dy = deltaV; }
-  else if (plane === 'coronal') { dx = deltaU; dz = -deltaV; }
-  else { dy = deltaU; dz = -deltaV; }
-  const shifted = new Float32Array(mask.data.length);
-  for (let z = 0; z < nz; z++) {
-    const tz = z + dz;
-    if (tz < 0 || tz >= nz) continue;
-    for (let y = 0; y < ny; y++) {
-      const ty = y + dy;
-      if (ty < 0 || ty >= ny) continue;
-      for (let x = 0; x < nx; x++) {
-        if (mask.data[z * nx * ny + y * nx + x] <= 0) continue;
-        const tx = x + dx;
-        if (tx >= 0 && tx < nx) shifted[tz * nx * ny + ty * nx + tx] = 1;
-      }
-    }
+  if (!mask || !delta || (!delta.dx && !delta.dy && !delta.dz)) {
+    scheduleRenderAll();
+    return;
   }
-  mask.data.set(shifted);
-  updateMaskVolume(mask);
+  const [, nx, ny, nz] = image.value.dim;
+  const { dx, dy, dz } = delta;
+  const sliceSize = nx * ny;
+  const shifted = new Float32Array(mask.data.length);
+  const sourceIndices = mask.activeIndices || collectActiveIndices(mask.data);
+  const translatedIndices = new Int32Array(sourceIndices.length);
+  let translatedCount = 0;
+  for (let index = 0; index < sourceIndices.length; index++) {
+    const sourceIndex = sourceIndices[index];
+    const z = Math.floor(sourceIndex / sliceSize);
+    const remainder = sourceIndex - z * sliceSize;
+    const y = Math.floor(remainder / nx);
+    const x = remainder - y * nx;
+    const tx = x + dx;
+    const ty = y + dy;
+    const tz = z + dz;
+    if (tx < 0 || tx >= nx || ty < 0 || ty >= ny || tz < 0 || tz >= nz) continue;
+    const targetIndex = tz * sliceSize + ty * nx + tx;
+    shifted[targetIndex] = 1;
+    translatedIndices[translatedCount++] = targetIndex;
+  }
+  mask.data = markRaw(shifted);
+  mask.activeIndices = markRaw(translatedIndices.slice(0, translatedCount));
+  updateMaskVolume(mask, false);
   dirty.value = true;
   scheduleRenderAll();
+  schedule3DRefresh();
   setStatus(`已平移掩膜：ΔX ${dx} · ΔY ${dy} · ΔZ ${dz}`, true);
 }
 
-function saveUndo() {
+function saveUndo(sparse = false) {
   const mask = selectedMask.value;
   if (!mask) return;
-  undoStack.value.push({ maskId: mask.id, data: new Float32Array(mask.data) });
+  undoStack.value.push(sparse
+    ? { maskId: mask.id, activeIndices: new Int32Array(mask.activeIndices || collectActiveIndices(mask.data)) }
+    : { maskId: mask.id, data: new Float32Array(mask.data) });
   if (undoStack.value.length > 20) undoStack.value.shift();
 }
 
@@ -916,21 +1238,31 @@ function undo() {
   const snapshot = undoStack.value.pop();
   if (!snapshot) return;
   const mask = masks.value.find(item => item.id === snapshot.maskId);
-  if (mask) mask.data.set(snapshot.data);
-  updateMaskVolume(mask);
+  if (mask && snapshot.activeIndices) {
+    const restored = new Float32Array(mask.data.length);
+    for (let index = 0; index < snapshot.activeIndices.length; index++) restored[snapshot.activeIndices[index]] = 1;
+    mask.data = markRaw(restored);
+    mask.activeIndices = markRaw(new Int32Array(snapshot.activeIndices));
+  } else if (mask) {
+    mask.data.set(snapshot.data);
+  }
+  updateMaskVolume(mask, !snapshot.activeIndices);
   dirty.value = true;
   scheduleRenderAll();
+  schedule3DRefresh();
   setStatus('已撤销上一步修改', true);
 }
 
 function setMode(nextMode) {
   if (nextMode !== 'browse' && !selectedMask.value) return;
   mode.value = nextMode;
+  scheduleRenderAll();
 }
 
 function toggleMask(mask) {
   mask.visible = !mask.visible;
   scheduleRenderAll();
+  schedule3DRefresh();
 }
 
 function removeMask(mask) {
@@ -940,11 +1272,13 @@ function removeMask(mask) {
   dirty.value = true;
   undoStack.value = [];
   scheduleRenderAll();
+  schedule3DRefresh();
 }
 
 function markDirtyAndRender() {
   dirty.value = true;
   scheduleRenderAll();
+  schedule3DRefresh();
 }
 
 function countMaskVoxels(data) {
@@ -953,11 +1287,21 @@ function countMaskVoxels(data) {
   return count;
 }
 
-function updateMaskVolume(mask) {
+function collectActiveIndices(data) {
+  const indices = new Int32Array(countMaskVoxels(data));
+  let cursor = 0;
+  for (let index = 0; index < data.length; index++) {
+    if (data[index] > 0) indices[cursor++] = index;
+  }
+  return indices;
+}
+
+function updateMaskVolume(mask, rebuildIndices = true) {
   if (!mask) return;
   const owner = images.value.find(item => item.id === mask.imageId);
   if (!owner) return;
-  mask.voxelCount = countMaskVoxels(mask.data);
+  if (rebuildIndices) mask.activeIndices = markRaw(collectActiveIndices(mask.data));
+  mask.voxelCount = mask.activeIndices?.length ?? countMaskVoxels(mask.data);
   mask.volume = mask.voxelCount * owner.pixdim[0] * owner.pixdim[1] * owner.pixdim[2] / 1000;
 }
 
@@ -1202,6 +1546,9 @@ onMounted(() => {
   window.addEventListener('keydown', handleShortcut, true);
   window.addEventListener('mouseup', handlePointerUp);
   window.addEventListener('beforeunload', handleBeforeUnload);
+  setup3DRenderer();
+  threeResizeObserver = new ResizeObserver(() => resize3DRenderer());
+  if (threeContainer.value) threeResizeObserver.observe(threeContainer.value);
   resizeObserver = new ResizeObserver(() => scheduleRenderAll());
   const grid = document.querySelector('.viewport-grid');
   if (grid) resizeObserver.observe(grid);
@@ -1212,6 +1559,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('mouseup', handlePointerUp);
   window.removeEventListener('beforeunload', handleBeforeUnload);
   resizeObserver?.disconnect();
+  destroy3DRenderer();
   if (renderFrame) cancelAnimationFrame(renderFrame);
 });
 
@@ -1439,14 +1787,35 @@ watch(selectedMaskId, () => scheduleRenderAll());
 }
 
 .collapse-button {
-  width: 18px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
   padding: 0;
-  border: 0;
-  color: #94a3b8;
+  border: 1px solid transparent;
+  border-radius: 4px;
   background: transparent;
   cursor: pointer;
-  font-size: 16px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.collapse-button:hover {
+  border-color: #33445c;
+  background: #1b293d;
+}
+
+.collapse-button span {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid #8fa0b7;
+  transform: rotate(90deg);
+  transition: transform 0.18s ease;
+}
+
+.collapse-button.collapsed span {
+  transform: rotate(0deg);
 }
 
 .tree-indent {
@@ -1554,6 +1923,26 @@ watch(selectedMaskId, () => scheduleRenderAll());
   background: #263247;
 }
 
+.plane-panel.axial {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.plane-panel.volume-3d {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.plane-panel.coronal {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.plane-panel.sagittal {
+  grid-column: 2;
+  grid-row: 2;
+}
+
 .viewport-grid.drop-active::after {
   content: "松开以导入文件";
   position: absolute;
@@ -1604,10 +1993,6 @@ watch(selectedMaskId, () => scheduleRenderAll());
   background: #000;
 }
 
-.plane-panel.axial {
-  grid-row: 1 / 3;
-}
-
 .plane-header {
   display: flex;
   align-items: center;
@@ -1633,6 +2018,12 @@ watch(selectedMaskId, () => scheduleRenderAll());
   color: #fde68a;
   background: #382e10;
   border-bottom: 1px solid #d8aa24;
+}
+
+.volume-3d .plane-header {
+  color: #c4b5fd;
+  background: #20204a;
+  border-bottom: 1px solid #8b5cf6;
 }
 
 .plane-actions {
@@ -1667,6 +2058,73 @@ watch(selectedMaskId, () => scheduleRenderAll());
   align-items: center;
   justify-content: center;
   overflow: hidden;
+}
+
+.three-stage {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 42%, #19243b, #050810 68%);
+}
+
+.three-stage canvas {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.three-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  color: #75849a;
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.orientation-cube {
+  position: absolute;
+  top: 13px;
+  right: 14px;
+  z-index: 3;
+  width: 72px;
+  height: 72px;
+  border: 1px solid rgba(217, 70, 239, 0.78);
+  color: #f5f3ff;
+  background: rgba(91, 83, 160, 0.36);
+  pointer-events: none;
+}
+
+.orientation-cube::before,
+.orientation-cube::after {
+  position: absolute;
+  content: "";
+  inset: 10px;
+  border: 1px solid rgba(217, 70, 239, 0.72);
+}
+
+.orientation-cube span {
+  position: absolute;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.orientation-cube .top { top: 2px; left: 50%; transform: translateX(-50%); }
+.orientation-cube .bottom { bottom: 2px; left: 50%; transform: translateX(-50%); }
+.orientation-cube .left { left: 3px; top: 50%; transform: translateY(-50%); }
+.orientation-cube .right { right: 3px; top: 50%; transform: translateY(-50%); }
+.orientation-cube .center { inset: 0; display: grid; place-items: center; }
+
+.three-footer {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: #78879d;
+  background: #0a111c;
+  font-size: 9px;
 }
 
 .canvas-stage canvas {
