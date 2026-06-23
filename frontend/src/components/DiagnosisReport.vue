@@ -31,12 +31,12 @@
       <h3>AI 风险评估</h3>
       <div v-if="loading" class="probability-loading">
         <el-icon class="is-loading"><Loading /></el-icon>
-        <div><strong>正在计算恶性概率</strong><span>正在提取 PZ/TZ 影像组学特征并运行 GBDT 模型</span></div>
+        <div><strong>正在计算恶性概率</strong><span>正在提取 PZ/TZ 影像组学特征并运行 预测 模型</span></div>
       </div>
       <el-alert v-else-if="error" :title="error" type="error" :closable="false" show-icon />
       <div v-else-if="prediction" class="probability-result">
         <div class="probability-ring" :style="ringStyle"><strong>{{ probabilityText }}</strong><span>恶性概率</span></div>
-        <div class="probability-copy"><span>GBDT 多模态预测</span><strong>{{ probabilityText }}</strong><small>模型输入 {{ prediction.feature_count }} 项特征，已排除 volume_ml。</small></div>
+        <div class="probability-copy"><span>多模态预测</span><strong>{{ probabilityText }}</strong><small>模型输入 {{ prediction.feature_count }} 项特征。</small></div>
       </div>
     </div>
 
