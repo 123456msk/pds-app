@@ -10,6 +10,7 @@ STAGING_DIR = DATA_DIR / ".staging"
 SEGMENTATION_MODEL_DIR = BASE_DIR / "app" / "models" / "segmentation"
 SEGMENTATION_UTILS_DIR = SEGMENTATION_MODEL_DIR / "Utils"
 SEGMENTATION_NNUNET_DIR = SEGMENTATION_MODEL_DIR / "nnUnet_paths"
+PERSISTENT_SEGMENTATION_WORKER = True
 
 for directory in (CASES_DIR, STAGING_DIR):
     directory.mkdir(parents=True, exist_ok=True)

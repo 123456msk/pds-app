@@ -27,15 +27,19 @@
         <button class="toolbar-button grid-toggle" :class="{ active: showGrid }" type="button" @click="showGrid = !showGrid; scheduleRenderAll()">
           网格
         </button>
+        <button class="toolbar-button grid-toggle" :class="{ active: !showImageLayer }" type="button" :disabled="!image" @click="toggleImageLayer">
+          {{ showImageLayer ? '只看 Mask' : '显示图像' }}
+        </button>
         <span class="toolbar-divider"></span>
         <button class="toolbar-button save-button" type="button" :disabled="!masks.length" @click="saveChanges">
           {{ dirty ? '● 保存修改' : '✓ 已保存' }}
         </button>
         <button class="toolbar-button" type="button" :disabled="!selectedMask" @click="exportSelected">导出选中</button>
         <button class="toolbar-button" type="button" :disabled="!masks.length" @click="exportAll">导出全部</button>
+        <button class="toolbar-button danger-button" type="button" :disabled="!images.length && !masks.length" @click="removeAllData">清空全部</button>
       </div>
 
-      <router-link class="back-link" to="/">返回诊断</router-link>
+      <button v-if="showReturnToDiagnosis" class="back-link" type="button" @click="returnToDiagnosis">返回诊断</button>
     </header>
 
     <section class="editor-workspace">
@@ -55,7 +59,11 @@
               <div
                 class="tree-item image-node"
                 :class="{ selected: volume.id === activeImageId }"
+                draggable="true"
                 @click="activateImage(volume.id)"
+                @dragstart="startTreeDrag('image', volume.id)"
+                @dragover.prevent
+                @drop.prevent="dropTreeItem('image', volume.id)"
               >
                 <button
                   class="collapse-button"
@@ -70,6 +78,7 @@
                 <span class="node-main">
                   <strong>{{ stripExtension(volume.name) }}</strong>
                   <small>{{ volume.modalityHint }} · {{ volume.datatypeLabel }}</small>
+                  <small>归属：{{ volume.sceneKey }}</small>
                   <small>{{ volume.dim[1] }} × {{ volume.dim[2] }} × {{ volume.dim[3] }}</small>
                 </span>
                 <button class="icon-button remove" type="button" title="移除图像" @click.stop="removeImage(volume)">×</button>
@@ -81,7 +90,11 @@
                   :key="mask.id"
                   class="tree-item mask-node"
                   :class="{ selected: mask.id === selectedMaskId }"
+                  draggable="true"
                   @click="selectMask(mask)"
+                  @dragstart="startTreeDrag('mask', mask.id)"
+                  @dragover.prevent
+                  @drop.prevent="dropTreeItem('mask', mask.id)"
                 >
                   <span class="tree-indent"></span>
                   <span class="node-chip" :style="{ background: mask.color }">M</span>
@@ -260,6 +273,56 @@
       <span class="loader-spinner"></span>
       <strong>{{ loadingText }}</strong>
     </div>
+
+    <div v-if="importReviewVisible" class="import-review-overlay">
+      <section class="import-review-panel">
+        <header>
+          <div>
+            <strong>确认导入文件</strong>
+            <span>手动指定图像类型和 Mask 归属，文件名为数字时也可以正确组织。</span>
+          </div>
+          <button type="button" @click="cancelImportReview">×</button>
+        </header>
+        <div class="import-table">
+          <div class="import-row import-head">
+            <span>文件</span>
+            <span>作为</span>
+            <span>图像类型 / 归属</span>
+            <span>尺寸</span>
+          </div>
+          <div v-for="row in pendingImportRows" :key="row.id" class="import-row">
+            <span class="import-name" :title="row.displayName">{{ row.displayName }}</span>
+            <select v-model="row.role">
+              <option value="image">图像</option>
+              <option value="mask">Mask</option>
+              <option value="skip">跳过</option>
+            </select>
+            <select v-if="row.role === 'image'" v-model="row.sceneKey">
+              <option value="mri">MRI</option>
+              <option value="ct">CT</option>
+              <option value="pet">PET</option>
+              <option :value="row.id">自定义：{{ stripExtension(row.file.name) }}</option>
+            </select>
+            <select v-else-if="row.role === 'mask'" v-model="row.ownerKey">
+              <option value="">请选择归属图像</option>
+              <option
+                v-for="option in importOwnerOptions(row)"
+                :key="option.key"
+                :value="option.key"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+            <span v-else class="skip-copy">不导入</span>
+            <span>{{ row.parsed.dim[1] }} × {{ row.parsed.dim[2] }} × {{ row.parsed.dim[3] }}</span>
+          </div>
+        </div>
+        <footer>
+          <button class="toolbar-button" type="button" @click="cancelImportReview">取消</button>
+          <button class="toolbar-button save-button" type="button" @click="confirmReviewedImport">导入选中数据</button>
+        </footer>
+      </section>
+    </div>
   </main>
 </template>
 
@@ -269,6 +332,7 @@ import JSZip from 'jszip';
 import pako from 'pako';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { resultFileUrl, saveViewerMasks } from '../api/casePreparation';
 
 const palette = ['#36a9e1', '#f3c74f', '#36c98f', '#ef7fa0', '#a78bfa', '#fb923c', '#22d3ee', '#e879f9'];
 const tools = [
@@ -288,6 +352,11 @@ const activeImageId = ref('');
 const image = computed(() => images.value.find(item => item.id === activeImageId.value) || null);
 const masks = ref([]);
 const collapsedImageIds = reactive(new Set());
+const pendingImportRows = ref([]);
+const importReviewVisible = ref(false);
+const treeDrag = ref(null);
+const localSaveHandle = ref(null);
+const localSaveDirectoryHandle = ref(null);
 const fullscreenPlane = ref('');
 const selectedMaskId = ref('');
 const selectedMask = computed(() => {
@@ -302,6 +371,7 @@ const contrast = ref(1);
 const brushSize = ref(1);
 const mode = ref('browse');
 const showGrid = ref(true);
+const showImageLayer = ref(true);
 const dirty = ref(false);
 const undoStack = ref([]);
 const loading = ref(false);
@@ -325,9 +395,41 @@ let threeResizeObserver = null;
 let threeRefreshFrame = 0;
 let threeRefreshTimer = 0;
 let threeRefreshIdle = 0;
+const routeQuery = new URLSearchParams(window.location.search);
+const caseId = routeQuery.get('case_id') || '';
+const showReturnToDiagnosis = routeQuery.get('from') === 'diagnosis';
+const resultFiles = [
+  'mri.nii.gz',
+  'mripz_mask.nii.gz',
+  'mritz_mask.nii.gz',
+  'mriwg_mask.nii.gz',
+  'ct.nii.gz',
+  'ctpz_mask.nii.gz',
+  'cttz_mask.nii.gz',
+  'ctwg_mask.nii.gz',
+  'pet.nii.gz',
+  'petpz_mask.nii.gz',
+  'pettz_mask.nii.gz',
+  'petwg_mask.nii.gz',
+];
+const editableMaskFields = {
+  'mripz_mask.nii.gz': 'mripz_mask',
+  'mritz_mask.nii.gz': 'mritz_mask',
+  'petpz_mask.nii.gz': 'petpz_mask',
+  'pettz_mask.nii.gz': 'pettz_mask',
+};
 
 function setCanvasRef(key, element) {
   if (element) canvases[key] = element;
+}
+
+function returnToDiagnosis() {
+  if (window.opener && !window.opener.closed) {
+    window.opener.focus();
+    window.close();
+    return;
+  }
+  window.location.replace('/');
 }
 
 function setStatus(message, ok = false) {
@@ -338,6 +440,14 @@ function setStatus(message, ok = false) {
 function setLoading(value, text = '') {
   loading.value = value;
   loadingText.value = text;
+}
+
+function waitForPaint() {
+  return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function yieldToMainThread() {
+  return new Promise(resolve => setTimeout(resolve, 0));
 }
 
 function masksForImage(imageId) {
@@ -689,7 +799,7 @@ async function handleDataInput(event) {
   if (files.length) await importSceneFiles(files);
 }
 
-async function importSceneFiles(inputFiles) {
+async function importSceneFiles(inputFiles, options = {}) {
   setLoading(true, '正在遍历并解析场景数据...');
   await nextTick();
   const errors = [];
@@ -706,31 +816,25 @@ async function importSceneFiles(inputFiles) {
           parsed,
           sourceIndex: index,
           role: classifyRole(file.name, parsed),
+          sceneKey: inferSceneKey(file.name),
+          ownerKey: inferSceneKey(file.name),
+          displayName: file.relativePath || file.name,
         });
       } catch (error) {
         errors.push(`${niftiFiles[index].name}: ${error.message}`);
       }
     }
-    const volumeEntries = entries.filter(entry => entry.role === 'image');
-    const maskEntries = entries.filter(entry => entry.role === 'mask');
 
-    for (const entry of volumeEntries) {
-      try {
-        addImageVolume(entry);
-      } catch (error) {
-        errors.push(`${entry.file.name}: ${error.message}`);
-      }
-    }
-    for (const entry of maskEntries) {
-      try {
-        addMaskVolume(entry);
-      } catch (error) {
-        errors.push(`${entry.file.name}: ${error.message}`);
-      }
+    if (options.review !== false && entries.length) {
+      pendingImportRows.value = buildPendingImportRows(entries);
+      importReviewVisible.value = true;
+      setStatus(`已解析 ${entries.length} 个 NIfTI 文件，请确认导入类型`, true);
+      return;
     }
 
+    const summary = await applyImportedEntries(entries);
     if (!activeImageId.value && images.value.length) activateImage(images.value[0].id);
-    setStatus(`已导入 ${volumeEntries.length} 个图像、${maskEntries.length} 个掩膜`, true);
+    setStatus(`已导入 ${summary.images} 个图像、${summary.masks} 个掩膜`, true);
     if (errors.length) window.alert(`部分文件未导入：\n${errors.join('\n')}`);
     await nextTick();
     renderAll();
@@ -752,10 +856,109 @@ async function expandInputFiles(files) {
       if (entry.dir || path.startsWith('__MACOSX/') || !/\.nii(\.gz)?$/i.test(path)) continue;
       const bytes = await entry.async('uint8array');
       const name = path.split(/[\\/]/).pop();
-      expanded.push(new File([bytes], name, { type: 'application/octet-stream' }));
+      const extracted = new File([bytes], name, { type: 'application/octet-stream' });
+      Object.defineProperty(extracted, 'relativePath', { value: path });
+      expanded.push(extracted);
     }
   }
   return expanded;
+}
+
+function buildPendingImportRows(entries) {
+  const rows = entries.map((entry, index) => ({
+    ...entry,
+    id: `pending_${Date.now()}_${index}`,
+    role: entry.role,
+    sceneKey: normalizeSceneKey(entry.sceneKey, entry),
+    ownerKey: '',
+  }));
+  const imageRows = rows.filter(row => row.role === 'image');
+  for (const row of rows) {
+    if (row.role !== 'mask') continue;
+    const compatibleImage = imageRows.find(candidate => sameGeometry(candidate.parsed, row.parsed))
+      || imageRows.find(candidate => sameDimensions(candidate.parsed.dim, row.parsed.dim));
+    const existingOwner = images.value.find(candidate => sameGeometry(candidate, row.parsed));
+    row.ownerKey = compatibleImage?.id || existingOwner?.id || '';
+  }
+  return rows;
+}
+
+function normalizeSceneKey(sceneKey, entry) {
+  if (['mri', 'ct', 'pet'].includes(sceneKey)) return sceneKey;
+  return entry?.id || sceneKey || stripExtension(entry?.file?.name || 'image').toLowerCase();
+}
+
+function importOwnerOptions(row) {
+  const options = [];
+  for (const volume of images.value) {
+    if (sameGeometry(volume, row.parsed)) {
+      options.push({ key: volume.id, label: `${stripExtension(volume.name)}（已有 ${volume.sceneKey}）` });
+    }
+  }
+  for (const candidate of pendingImportRows.value) {
+    if (candidate.id === row.id || candidate.role !== 'image') continue;
+    if (!sameGeometry(candidate.parsed, row.parsed) && !sameDimensions(candidate.parsed.dim, row.parsed.dim)) continue;
+    options.push({ key: candidate.id, label: `${stripExtension(candidate.file.name)}（本次 ${candidate.sceneKey}）` });
+  }
+  return options;
+}
+
+function cancelImportReview() {
+  pendingImportRows.value = [];
+  importReviewVisible.value = false;
+}
+
+async function confirmReviewedImport() {
+  const invalidMask = pendingImportRows.value.find(row => row.role === 'mask' && !row.ownerKey);
+  if (invalidMask) {
+    window.alert(`请先选择 Mask “${invalidMask.displayName}” 的归属图像。`);
+    return;
+  }
+  setLoading(true, '正在导入确认后的数据...');
+  importReviewVisible.value = false;
+  await nextTick();
+  await waitForPaint();
+  try {
+    const summary = await applyImportedEntries(pendingImportRows.value, (message) => {
+      loadingText.value = message;
+    });
+    pendingImportRows.value = [];
+    setStatus(`已导入 ${summary.images} 个图像、${summary.masks} 个掩膜`, true);
+    await nextTick();
+    renderAll();
+    schedule3DRefresh();
+  } catch (error) {
+    window.alert(`导入失败：${error.message}`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function applyImportedEntries(entries, onProgress) {
+  const importedImageIds = new Map();
+  let imageCount = 0;
+  let maskCount = 0;
+  const imageEntries = entries.filter(item => item.role === 'image');
+  const maskEntries = entries.filter(item => item.role === 'mask');
+  for (let index = 0; index < imageEntries.length; index++) {
+    const entry = imageEntries[index];
+    onProgress?.(`正在加入图像 ${index + 1}/${imageEntries.length}：${entry.file.name}`);
+    const volume = addImageVolume(entry);
+    importedImageIds.set(entry.id, volume.id);
+    imageCount++;
+    await yieldToMainThread();
+  }
+  for (let index = 0; index < maskEntries.length; index++) {
+    const entry = maskEntries[index];
+    onProgress?.(`正在加入 Mask ${index + 1}/${maskEntries.length}：${entry.file.name}`);
+    const existingOwnerId = images.value.some(item => item.id === entry.ownerKey) ? entry.ownerKey : '';
+    const ownerId = importedImageIds.get(entry.ownerKey) || existingOwnerId;
+    addMaskVolume(entry, ownerId);
+    maskCount++;
+    await yieldToMainThread();
+  }
+  if (!activeImageId.value && images.value.length) activateImage(images.value[0].id);
+  return { images: imageCount, masks: maskCount };
 }
 
 function addImageVolume(entry) {
@@ -768,29 +971,31 @@ function addImageVolume(entry) {
     headerBytes: markRaw(parsed.headerBytes),
     name: file.name,
     sourceIndex,
-    sceneKey: inferSceneKey(file.name),
-    modalityHint: inferModality(file.name, parsed),
+    sceneKey: normalizeSceneKey(entry.sceneKey || inferSceneKey(file.name), entry),
+    modalityHint: inferModality(entry.sceneKey || file.name, parsed),
     windowMin: windowRange.min,
     windowMax: windowRange.max,
   });
   images.value = [...images.value, volume];
   if (!activeImageId.value) activateImage(volume.id);
+  return volume;
 }
 
-function addMaskVolume(entry) {
+function addMaskVolume(entry, ownerId = '') {
   const { file, parsed, sourceIndex } = entry;
-  const owner = findMaskOwner(file.name, parsed, sourceIndex);
+  const owner = ownerId
+    ? images.value.find(item => item.id === ownerId)
+    : findMaskOwner(file.name, parsed, sourceIndex);
   if (!owner) throw new Error('找不到名称前缀和尺寸匹配的图像');
-  const data = new Float32Array(parsed.data.length);
-  for (let index = 0; index < parsed.data.length; index++) data[index] = parsed.data[index] > 0 ? 1 : 0;
-  const voxelCount = countMaskVoxels(data);
-  const activeIndices = collectActiveIndices(data);
+  const { data, voxelCount, activeIndices } = createBinaryMaskData(parsed.data);
   const mask = {
     id: `mask_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     imageId: owner.id,
     name: stripExtension(file.name),
     sourceIndex,
     dim: parsed.dim,
+    pixdim: parsed.pixdim,
+    geometryKey: parsed.geometryKey,
     data: markRaw(data),
     headerBytes: markRaw(parsed.headerBytes),
     littleEndian: parsed.littleEndian,
@@ -807,10 +1012,51 @@ function addMaskVolume(entry) {
   dirty.value = true;
 }
 
+function createBinaryMaskData(sourceData) {
+  const data = new Float32Array(sourceData.length);
+  const active = [];
+  for (let index = 0; index < sourceData.length; index++) {
+    if (sourceData[index] <= 0) continue;
+    data[index] = 1;
+    active.push(index);
+  }
+  return {
+    data,
+    voxelCount: active.length,
+    activeIndices: Int32Array.from(active),
+  };
+}
+
 function handleDrop(event) {
   dragOver.value = false;
   const files = [...event.dataTransfer.files].filter(file => /\.(nii|nii\.gz|zip)$/i.test(file.name));
   if (files.length) importSceneFiles(files);
+}
+
+async function loadCaseResults() {
+  if (!caseId) return;
+  setLoading(true, `正在加载病例 ${caseId} 的 12 个结果文件...`);
+  const files = [];
+  const errors = [];
+  try {
+    for (const filename of resultFiles) {
+      try {
+        const response = await fetch(resultFileUrl(caseId, filename));
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        files.push(new File([await response.blob()], filename, { type: 'application/octet-stream' }));
+      } catch (error) {
+        errors.push(`${filename}: ${error.message}`);
+      }
+    }
+    if (files.length) {
+      await importSceneFiles(files, { review: false });
+      dirty.value = false;
+      setStatus(`已加载病例 ${caseId} 的结果文件`, true);
+    }
+    if (errors.length) window.alert(`部分病例结果未加载：\n${errors.join('\n')}`);
+  } finally {
+    setLoading(false);
+  }
 }
 
 function activateImage(imageId) {
@@ -820,7 +1066,7 @@ function activateImage(imageId) {
   cursor.x = Math.floor(volume.dim[1] / 2);
   cursor.y = Math.floor(volume.dim[2] / 2);
   cursor.z = Math.floor(volume.dim[3] / 2);
-  selectedMaskId.value = masks.value.find(mask => mask.imageId === imageId)?.id || '';
+  selectedMaskId.value = '';
   Object.assign(zooms, { axial: 1, coronal: 1, sagittal: 1 });
   scheduleRenderAll();
   schedule3DRefresh();
@@ -829,6 +1075,64 @@ function activateImage(imageId) {
 function selectMask(mask) {
   if (mask.imageId !== activeImageId.value) activateImage(mask.imageId);
   selectedMaskId.value = mask.id;
+}
+
+function startTreeDrag(type, id) {
+  treeDrag.value = { type, id };
+}
+
+function dropTreeItem(targetType, targetId) {
+  const dragged = treeDrag.value;
+  treeDrag.value = null;
+  if (!dragged || dragged.id === targetId) return;
+
+  if (dragged.type === 'image' && targetType === 'image') {
+    const list = [...images.value];
+    const from = list.findIndex(item => item.id === dragged.id);
+    const to = list.findIndex(item => item.id === targetId);
+    if (from < 0 || to < 0) return;
+    const [moved] = list.splice(from, 1);
+    list.splice(to, 0, moved);
+    images.value = list;
+    setStatus(`已调整图像顺序：${stripExtension(moved.name)}`, true);
+    return;
+  }
+
+  if (dragged.type !== 'mask') return;
+  const draggedMask = masks.value.find(item => item.id === dragged.id);
+  if (!draggedMask) return;
+
+  const targetImage = targetType === 'image'
+    ? images.value.find(item => item.id === targetId)
+    : images.value.find(item => item.id === masks.value.find(mask => mask.id === targetId)?.imageId);
+  if (!targetImage) return;
+  if (!sameGeometry(targetImage, draggedMask)) {
+    window.alert('目标图像与该 Mask 尺寸/空间信息不一致，不能归属到这里。');
+    return;
+  }
+  draggedMask.imageId = targetImage.id;
+  if (targetType === 'mask') reorderMask(dragged.id, targetId);
+  activateImage(targetImage.id);
+  selectedMaskId.value = draggedMask.id;
+  dirty.value = true;
+  setStatus(`已将 ${draggedMask.name} 归属到 ${stripExtension(targetImage.name)}`, true);
+  scheduleRenderAll();
+  schedule3DRefresh();
+}
+
+function reorderMask(sourceId, targetId) {
+  const list = [...masks.value];
+  const from = list.findIndex(item => item.id === sourceId);
+  const to = list.findIndex(item => item.id === targetId);
+  if (from < 0 || to < 0) return;
+  const [moved] = list.splice(from, 1);
+  list.splice(to, 0, moved);
+  masks.value = list;
+}
+
+function toggleImageLayer() {
+  showImageLayer.value = !showImageLayer.value;
+  scheduleRenderAll();
 }
 
 function imageName(imageId) {
@@ -857,6 +1161,32 @@ function removeImage(volume) {
     for (const canvas of Object.values(canvases)) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
   }
   setStatus(`图像 ${stripExtension(volume.name)} 已移除`);
+  schedule3DRefresh();
+}
+
+function removeAllData() {
+  if (!images.value.length && !masks.value.length) return;
+  if (!window.confirm('确定清空全部图像和 Mask 吗？未保存的修改会丢失。')) return;
+  images.value = [];
+  masks.value = [];
+  collapsedImageIds.clear();
+  pendingImportRows.value = [];
+  importReviewVisible.value = false;
+  activeImageId.value = '';
+  selectedMaskId.value = '';
+  undoStack.value = [];
+  dirty.value = false;
+  drawing.value = false;
+  translateDrag.value = null;
+  localSaveHandle.value = null;
+  localSaveDirectoryHandle.value = null;
+  mode.value = 'browse';
+  cursor.x = 0; cursor.y = 0; cursor.z = 0;
+  for (const canvas of Object.values(canvases)) {
+    const context = canvas.getContext('2d');
+    context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  setStatus('已清空全部图像和 Mask', true);
   schedule3DRefresh();
 }
 
@@ -960,9 +1290,12 @@ function renderPlane(plane) {
     for (let u = 0; u < width; u++) {
       const voxel = toVoxel(u, v);
       const voxelIndex = voxel.z * nx * ny + voxel.y * nx + voxel.x;
-      let intensity = (source.data[voxelIndex] - min) / (max - min) * 255 * brightness.value;
-      intensity = ((intensity / 255 - 0.5) * contrast.value + 0.5) * 255;
-      intensity = Math.max(0, Math.min(255, intensity));
+      let intensity = 0;
+      if (showImageLayer.value) {
+        intensity = (source.data[voxelIndex] - min) / (max - min) * 255 * brightness.value;
+        intensity = ((intensity / 255 - 0.5) * contrast.value + 0.5) * 255;
+        intensity = Math.max(0, Math.min(255, intensity));
+      }
       let red = intensity;
       let green = intensity;
       let blue = intensity;
@@ -1350,6 +1683,46 @@ async function buildMasksZip() {
   return zip.generateAsync({ type: 'blob', compression: 'STORE' });
 }
 
+async function buildMaskBlob(mask) {
+  const compressed = await gzipBytes(new Uint8Array(buildMaskNifti(mask)));
+  return new Blob([compressed], { type: 'application/gzip' });
+}
+
+function findEditableMask(filename) {
+  const exact = masks.value.find(mask => `${safeName(mask.name).toLowerCase()}.nii.gz` === filename);
+  if (exact) return exact;
+  const base = stripExtension(filename).toLowerCase();
+  return masks.value.find(mask => stripExtension(mask.name).toLowerCase() === base);
+}
+
+async function saveCaseMasks() {
+  const payloads = {};
+  for (const [filename, field] of Object.entries(editableMaskFields)) {
+    const mask = findEditableMask(filename);
+    if (!mask) throw new Error(`缺少 ${filename}，不能保存到病例。`);
+    payloads[field] = await buildMaskBlob(mask);
+  }
+  return saveViewerMasks(caseId, payloads);
+}
+
+async function saveMasksToDirectory() {
+  if (!('showDirectoryPicker' in window)) return false;
+  const directory = localSaveDirectoryHandle.value || await window.showDirectoryPicker({
+    mode: 'readwrite',
+    startIn: 'downloads',
+  });
+  localSaveDirectoryHandle.value = directory;
+  for (const mask of masks.value) {
+    const fileName = `${safeName(mask.name)}.nii.gz`;
+    const fileHandle = await directory.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(await buildMaskBlob(mask));
+    await writable.close();
+    await yieldToMainThread();
+  }
+  return true;
+}
+
 async function gzipBytes(bytes) {
   if (typeof CompressionStream !== 'undefined') {
     const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
@@ -1365,13 +1738,28 @@ async function saveChanges() {
   await nextTick();
   await new Promise(resolve => requestAnimationFrame(resolve));
   try {
+    if (caseId) {
+      const result = await saveCaseMasks();
+      dirty.value = false;
+      setStatus(`修改已保存到病例 ${caseId}，后续预测将使用覆盖后的 Mask`, true);
+      localStorage.setItem(`pds_case_${caseId}_edited`, result.saved_at || String(Date.now()));
+      window.dispatchEvent(new CustomEvent('pds-viewer-masks-saved', { detail: result }));
+      return;
+    }
+    if (await saveMasksToDirectory()) {
+      dirty.value = false;
+      setStatus(`修改已保存到本地文件夹，共覆盖/写入 ${masks.value.length} 个 Mask 文件`, true);
+      return;
+    }
+
     const blob = await buildMasksZip();
     const suggestedName = `${safeName(stripExtension(image.value.name))}_modified_masks.zip`;
     if ('showSaveFilePicker' in window) {
-      const handle = await window.showSaveFilePicker({
+      const handle = localSaveHandle.value || await window.showSaveFilePicker({
         suggestedName,
         types: [{ description: 'ZIP 压缩包', accept: { 'application/zip': ['.zip'] } }],
       });
+      localSaveHandle.value = handle;
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
@@ -1394,8 +1782,7 @@ async function exportSelected() {
   await nextTick();
   await new Promise(resolve => requestAnimationFrame(resolve));
   try {
-    const compressed = await gzipBytes(new Uint8Array(buildMaskNifti(mask)));
-    downloadBlob(new Blob([compressed], { type: 'application/gzip' }), `${safeName(mask.name)}.nii.gz`);
+    downloadBlob(await buildMaskBlob(mask), `${safeName(mask.name)}.nii.gz`);
   } finally {
     setLoading(false);
   }
@@ -1552,6 +1939,7 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => scheduleRenderAll());
   const grid = document.querySelector('.viewport-grid');
   if (grid) resizeObserver.observe(grid);
+  loadCaseResults();
 });
 
 onBeforeUnmount(() => {
@@ -1665,6 +2053,16 @@ watch(selectedMaskId, () => scheduleRenderAll());
 
 .save-button {
   color: #facc15;
+}
+
+.danger-button {
+  color: #fda4af;
+}
+
+.danger-button:hover {
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fecdd3;
+  background: rgba(248, 113, 113, 0.12);
 }
 
 .toolbar-divider {
@@ -2274,6 +2672,111 @@ input[type="color"] {
 
 .editor-statusbar .ok {
   color: #34d399;
+}
+
+.import-review-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 7, 18, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.import-review-panel {
+  width: min(980px, 96vw);
+  max-height: min(720px, 92vh);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0e1625;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+}
+
+.import-review-panel header,
+.import-review-panel footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.import-review-panel footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.import-review-panel header strong {
+  display: block;
+  font-size: 16px;
+}
+
+.import-review-panel header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.import-review-panel header button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: #dce8f8;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.import-table {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.import-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 110px minmax(220px, 0.8fr) 150px;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: #dbeafe;
+  font-size: 12px;
+}
+
+.import-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: #8ec8ff;
+  background: #0e1625;
+  font-weight: 800;
+}
+
+.import-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-row select {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 6px;
+  color: #eaf2ff;
+  background: #111c2e;
+}
+
+.skip-copy {
+  color: var(--muted);
 }
 
 .editor-loader {

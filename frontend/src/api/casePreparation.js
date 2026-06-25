@@ -56,6 +56,32 @@ export async function segmentPreparedCase(caseId, onProgress) {
 export function resultFileUrl(caseId, filename) {
   return `http://127.0.0.1:8100/api/cases/${caseId}/results/${encodeURIComponent(filename)}`;
 }
+
+export function originalResultFileUrl(caseId, filename) {
+  return `http://127.0.0.1:8100/api/cases/${caseId}/results-original/${encodeURIComponent(filename)}`;
+}
+
+export async function fetchCaseManifest(caseId) {
+  const response = await fetch(`http://127.0.0.1:8100/api/cases/${encodeURIComponent(caseId)}`);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || '读取病例信息失败。');
+  return payload;
+}
+
+export async function saveViewerMasks(caseId, payloads) {
+  const formData = new FormData();
+  for (const [field, blob] of Object.entries(payloads)) {
+    formData.append(field, blob, `${field}.nii.gz`);
+  }
+  const response = await fetch(`http://127.0.0.1:8100/api/cases/${caseId}/viewer-masks`, {
+    method: 'POST',
+    body: formData,
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || '保存编辑后的掩膜失败。');
+  return payload;
+}
+
 export async function predictPreparedCase(caseId) {
   const response = await fetch(`http://127.0.0.1:8100/api/cases/${caseId}/predict`, { method: 'POST' });
   const payload = await response.json();

@@ -39,6 +39,21 @@ def download_case_results(case_id: str):
         raise HTTPException(status_code=404, detail="病例最终结果尚未生成。")
     return FileResponse(archive_path, media_type="application/zip", filename=f"{normalized}_12_results.zip")
 
+
+@router.get("/cases/{case_id}/results-original")
+def download_original_case_results(case_id: str):
+    try:
+        normalized = normalize_case_id(case_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    case_directory = get_case_directory(normalized)
+    archive_path = case_directory / "original_results.zip"
+    if not archive_path.exists():
+        archive_path = case_directory / "results.zip"
+    if not archive_path.exists():
+        raise HTTPException(status_code=404, detail="病例最终结果尚未生成。")
+    return FileResponse(archive_path, media_type="application/zip", filename=f"{normalized}_original_12_results.zip")
+
 RESULT_FILES = {
     "mri.nii.gz", "mripz_mask.nii.gz", "mritz_mask.nii.gz",
     "pet.nii.gz", "petpz_mask.nii.gz", "pettz_mask.nii.gz",
@@ -56,6 +71,23 @@ def get_result_file(case_id: str, filename: str):
     if filename not in RESULT_FILES:
         raise HTTPException(status_code=400, detail="不允许访问该结果文件。")
     result_path = get_case_directory(normalized) / "results" / filename
+    if not result_path.exists():
+        raise HTTPException(status_code=404, detail="结果文件不存在。")
+    return FileResponse(result_path, media_type="application/octet-stream", filename=filename)
+
+
+@router.get("/cases/{case_id}/results-original/{filename}")
+def get_original_result_file(case_id: str, filename: str):
+    try:
+        normalized = normalize_case_id(case_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if filename not in RESULT_FILES:
+        raise HTTPException(status_code=400, detail="不允许访问该结果文件。")
+    case_directory = get_case_directory(normalized)
+    result_path = case_directory / "original_results" / filename
+    if not result_path.exists():
+        result_path = case_directory / "results" / filename
     if not result_path.exists():
         raise HTTPException(status_code=404, detail="结果文件不存在。")
     return FileResponse(result_path, media_type="application/octet-stream", filename=filename)

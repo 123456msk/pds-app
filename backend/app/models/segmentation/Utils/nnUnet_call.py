@@ -26,6 +26,7 @@ class BaseNNUnetModule(ABC):
 
 class WGNNUnet(BaseNNUnetModule):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    initialized_model_folder = None
 
     # Create nnUNetPredictor with the determined device
     predictor = nnUNetPredictor(
@@ -41,11 +42,14 @@ class WGNNUnet(BaseNNUnetModule):
     def __init__(self, input_path:str, output_path:str):
         self.input_path = input_path
         self.output_path = output_path
-        self.predictor.initialize_from_trained_model_folder(
-        join(nnUNet_results, os.path.join(self.input_path,'nnUNetTrainer__nnUNetPlans__3d_fullres')),
-        use_folds=(0,),
-        checkpoint_name='checkpoint_final.pth',
-    )
+        model_folder = join(nnUNet_results, os.path.join(self.input_path,'nnUNetTrainer__nnUNetPlans__3d_fullres'))
+        if self.__class__.initialized_model_folder != model_folder:
+            self.predictor.initialize_from_trained_model_folder(
+            model_folder,
+            use_folds=(0,),
+            checkpoint_name='checkpoint_final.pth',
+        )
+            self.__class__.initialized_model_folder = model_folder
     
     def prediction(self):
         self.predictor.predict_from_files(join(nnUNet_raw, os.path.join(self.input_path,'ImagesTs')),
@@ -65,6 +69,7 @@ class WGNNUnet(BaseNNUnetModule):
 
 class ZonesNNUnet(BaseNNUnetModule):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    initialized_model_folder = None
 
     # Create nnUNetPredictor with the determined device
     predictor = nnUNetPredictor(
@@ -80,11 +85,14 @@ class ZonesNNUnet(BaseNNUnetModule):
     def __init__(self, input_path, output_path):
         self.input_path = input_path
         self.output_path = output_path
-        self.predictor.initialize_from_trained_model_folder(
-        join(nnUNet_results, os.path.join(self.input_path,'nnUNetTrainer__nnUNetPlans__3d_fullres')),
-        use_folds=(0,),
-        checkpoint_name='checkpoint_final.pth',
-    )
+        model_folder = join(nnUNet_results, os.path.join(self.input_path,'nnUNetTrainer__nnUNetPlans__3d_fullres'))
+        if self.__class__.initialized_model_folder != model_folder:
+            self.predictor.initialize_from_trained_model_folder(
+            model_folder,
+            use_folds=(0,),
+            checkpoint_name='checkpoint_final.pth',
+        )
+            self.__class__.initialized_model_folder = model_folder
     
     def prediction(self):
         self.predictor.predict_from_files(join(nnUNet_raw, os.path.join(self.input_path,'ImagesTs')),

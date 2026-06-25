@@ -204,6 +204,62 @@
       </div>
     </section>
 
+    <section v-if="hasCompletedResults" class="result-download-panel">
+      <div class="result-download-header">
+        <div>
+          <strong>结果文件下载</strong>
+          <span>12 个 NIfTI 文件，可按需勾选打包下载。</span>
+        </div>
+        <div class="result-file-actions">
+          <el-button size="small" @click="selectAllResultFiles">全选</el-button>
+          <el-button size="small" @click="selectedResultFiles = []">清空</el-button>
+        </div>
+      </div>
+      <el-checkbox-group v-model="selectedResultFiles" class="result-file-grid">
+        <el-checkbox
+          v-for="filename in resultFiles"
+          :key="filename"
+          :label="filename"
+          border
+        >
+          {{ filename }}
+        </el-checkbox>
+      </el-checkbox-group>
+      <div class="result-download-actions">
+        <el-button
+          :icon="Download"
+          :loading="selectedDownloadLoading"
+          @click="downloadSelectedResults('current')"
+        >
+          下载当前结果
+        </el-button>
+        <el-button
+          :icon="Download"
+          :loading="selectedDownloadLoading"
+          @click="downloadSelectedResults('before')"
+        >
+          下载修改前结果
+        </el-button>
+        <el-button
+          v-if="hasEditedResults"
+          type="primary"
+          :icon="Download"
+          :loading="selectedDownloadLoading"
+          @click="downloadSelectedResults('edited')"
+        >
+          下载编辑后结果
+        </el-button>
+      </div>
+      <el-alert
+        v-if="hasEditedResults"
+        class="edited-result-tip"
+        type="success"
+        :closable="false"
+        show-icon
+        title="已检测到阅片器保存过修改；编辑后下载会导出当前病例最新结果。"
+      />
+    </section>
+
     <DiagnosisReport
       v-if="diagnosisStarted"
       id="diagnosis-report"
@@ -261,7 +317,7 @@
   </section>
 </template>
 <script setup>
-import { computed, nextTick, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import {
   Aim,
@@ -277,10 +333,14 @@ import ModalityUploadCard from "./ModalityUploadCard.vue";
 import SeriesScanResult from "./SeriesScanResult.vue";
 import { useUploadStore } from "../stores/uploadStore";
 import {
+  fetchCaseManifest,
+  originalResultFileUrl,
   predictPreparedCase,
   prepareCaseOnBackend,
+  resultFileUrl,
   segmentPreparedCase,
 } from "../api/casePreparation";
+import JSZip from "jszip";
 
 const store = useUploadStore();
 const patient = reactive({ name: "", age: null, psa: null, ftPsa: null });
@@ -300,6 +360,23 @@ const diagnosisStarted = ref(false);
 const diagnosisLoading = ref(false);
 const diagnosisResult = ref(null);
 const diagnosisError = ref("");
+const selectedDownloadLoading = ref(false);
+const hasEditedResults = ref(false);
+const resultFiles = [
+  "mri.nii.gz",
+  "mripz_mask.nii.gz",
+  "mritz_mask.nii.gz",
+  "mriwg_mask.nii.gz",
+  "ct.nii.gz",
+  "ctpz_mask.nii.gz",
+  "cttz_mask.nii.gz",
+  "ctwg_mask.nii.gz",
+  "pet.nii.gz",
+  "petpz_mask.nii.gz",
+  "pettz_mask.nii.gz",
+  "petwg_mask.nii.gz",
+];
+const selectedResultFiles = ref([...resultFiles]);
 
 const seriesReady = computed(() => {
   const mri = store.modalities.mri;
@@ -374,15 +451,78 @@ function downloadResults() {
 function openStandaloneViewer() {
   const caseId = preparedResult.value?.case_id;
   if (caseId)
-    window.open(`/viewer.html?case_id=${encodeURIComponent(caseId)}`, "_blank");
+    window.open(`/image-editor?case_id=${encodeURIComponent(caseId)}&from=diagnosis`, "_blank");
 }
 function openViewerFromDialog() {
   resultDialogVisible.value = false;
   openStandaloneViewer();
 }
+function editedStorageKey(caseId) {
+  return `pds_case_${caseId}_edited`;
+}
+async function refreshEditedResultState() {
+  const caseId = preparedResult.value?.case_id;
+  if (!caseId) {
+    hasEditedResults.value = false;
+    return;
+  }
+  if (localStorage.getItem(editedStorageKey(caseId))) {
+    hasEditedResults.value = true;
+    return;
+  }
+  try {
+    const manifest = await fetchCaseManifest(caseId);
+    hasEditedResults.value = Boolean(manifest.viewer_edits?.saved_at);
+    if (hasEditedResults.value) {
+      localStorage.setItem(editedStorageKey(caseId), manifest.viewer_edits.saved_at);
+    }
+  } catch {
+    hasEditedResults.value = false;
+  }
+}
+function handleWindowFocus() {
+  if (hasCompletedResults.value) refreshEditedResultState();
+}
+function handleStorageChange(event) {
+  const caseId = preparedResult.value?.case_id;
+  if (caseId && event.key === editedStorageKey(caseId)) hasEditedResults.value = Boolean(event.newValue);
+}
+function selectAllResultFiles() {
+  selectedResultFiles.value = [...resultFiles];
+}
+async function downloadSelectedResults(kind = "current") {
+  const caseId = preparedResult.value?.case_id;
+  if (!caseId || selectedDownloadLoading.value) return;
+  if (!selectedResultFiles.value.length) {
+    ElMessage.warning("请至少选择一个结果文件。");
+    return;
+  }
+  selectedDownloadLoading.value = true;
+  try {
+    const zip = new JSZip();
+    for (const filename of selectedResultFiles.value) {
+      const url = kind === "before" ? originalResultFileUrl(caseId, filename) : resultFileUrl(caseId, filename);
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${filename} 下载失败。`);
+      zip.file(filename, await response.blob());
+    }
+    const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    const suffix = kind === "before" ? "before_edit" : kind === "edited" ? "edited" : "current";
+    link.download = `${caseId}_${suffix}_results.zip`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  } catch (error) {
+    ElMessage.error(error.message || "下载结果失败。");
+  } finally {
+    selectedDownloadLoading.value = false;
+  }
+}
 async function startDiagnosis() {
   const caseId = preparedResult.value?.case_id;
   if (!caseId || diagnosisLoading.value) return;
+  await refreshEditedResultState();
   diagnosisStarted.value = true;
   diagnosisLoading.value = true;
   diagnosisResult.value = null;
@@ -419,6 +559,7 @@ function restartFlow() {
   sessionLocked.value = false;
   diagnosisStarted.value = false;
   resultDialogVisible.value = false;
+  hasEditedResults.value = false;
   ElMessage.info("已清空当前病例，可以重新上传影像。");
 }
 async function handleSubmit() {
@@ -451,7 +592,9 @@ async function handleSubmit() {
     completedPatient.value = patientPayload;
     completedRevision.value = store.revision;
     sessionLocked.value = true;
+    hasEditedResults.value = false;
     resultDialogVisible.value = true;
+    refreshEditedResultState();
     ElMessage.success("已生成 12 个结果文件。");
   } catch (error) {
     ElMessage.error(error.message || "自动分割失败。");
@@ -459,16 +602,113 @@ async function handleSubmit() {
     isSubmitting.value = false;
   }
 }
+
+onMounted(() => {
+  window.addEventListener("focus", handleWindowFocus);
+  window.addEventListener("storage", handleStorageChange);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("focus", handleWindowFocus);
+  window.removeEventListener("storage", handleStorageChange);
+});
 </script>
 
 <style scoped>
 .patient-form :deep(.el-input-number .el-input__inner) {
   text-align: left;
 }
+
+.workbench-action {
+  border-top: 1px solid #dce8f2;
+  background:
+    linear-gradient(90deg, rgba(7, 136, 199, 0.08), rgba(22, 163, 106, 0.08)),
+    #f8fbfe;
+}
+
+.segment-button {
+  min-width: 230px;
+  height: 48px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #0689c8 0%, #16a36a 100%);
+  box-shadow: 0 12px 24px rgba(7, 136, 199, 0.22);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.segment-button:not(.is-disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px rgba(7, 136, 199, 0.28);
+}
+
+.segment-button.is-disabled {
+  border: 1px solid #d4dfeb;
+  background: #edf3f8;
+  box-shadow: none;
+  color: #8b99aa;
+}
+
+.result-download-panel {
+  margin-top: -12px;
+  padding: 18px;
+  border: 1px solid #d9e4f2;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f4f8fc 100%);
+}
+
+.result-download-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.result-download-header strong {
+  display: block;
+  color: #12345b;
+  font-size: 16px;
+}
+
+.result-download-header span {
+  color: #6a7b91;
+  font-size: 12px;
+}
+
+.result-file-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.result-file-grid :deep(.el-checkbox) {
+  min-width: 0;
+  margin-right: 0;
+}
+
+.result-file-grid :deep(.el-checkbox__label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-file-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.result-download-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.edited-result-tip {
+  margin-top: 12px;
+}
 </style>
-
-
-
-
-
-
