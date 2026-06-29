@@ -44,7 +44,14 @@ def install_backend() -> None:
     python = backend_python()
     print("Installing backend dependencies...")
     subprocess.check_call([python, "-m", "pip", "install", "--upgrade", "pip"], cwd=BACKEND_DIR)
-    subprocess.check_call([python, "-m", "pip", "install", "-r", "requirements.txt"], cwd=BACKEND_DIR)
+    subprocess.check_call(
+        [python, "-m", "pip", "install", "--upgrade", "setuptools", "wheel", "numpy==1.26.2"],
+        cwd=BACKEND_DIR,
+    )
+    subprocess.check_call(
+        [python, "-m", "pip", "install", "--no-build-isolation", "-r", "requirements.txt"],
+        cwd=BACKEND_DIR,
+    )
 
 
 def install_frontend() -> None:
