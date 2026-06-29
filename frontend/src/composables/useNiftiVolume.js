@@ -1,4 +1,5 @@
 import pako from 'pako';
+import { downloadResultArrayBuffer } from '../api/casePreparation';
 
 function readValue(view, offset, datatype, littleEndian) {
   switch (datatype) {
@@ -47,7 +48,7 @@ export function parseNiftiBuffer(input, compressed = true) {
 }
 
 export async function loadNifti(url) {
-  const response = await fetch(url);
+  const response = { ok: true, arrayBuffer: async () => downloadResultArrayBuffer(url) };
   if (!response.ok) throw new Error(`读取结果文件失败：${response.status}`);
   return parseNiftiBuffer(await response.arrayBuffer(), url.toLowerCase().endsWith('.gz'));
 }

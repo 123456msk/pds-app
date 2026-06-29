@@ -1,4 +1,7 @@
 ﻿import JSZip from 'jszip';
+import { apiUrl, http } from './http';
+
+export { apiUrl };
 
 async function buildDicomZip(entries, label, onProgress) {
   if (!entries.length) {
@@ -35,37 +38,26 @@ export async function prepareCaseOnBackend(modalities, ranges, patient, onProgre
   formData.append('case_id', caseId);
 
   onProgress?.('正在上传全部影像并识别序列');
-  const response = await fetch('http://127.0.0.1:8100/api/cases/prepare', {
-    method: 'POST',
-    body: formData,
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.detail || '后端病例保存失败。');
-  }
-  return payload;
+  const { data } = await http.post('/cases/prepare', formData);
+  return data;
 }
 
 export async function segmentPreparedCase(caseId, onProgress) {
   onProgress?.('正在运行完整 T2 MRI 分割并映射到 CT/PET');
-  const response = await fetch(`http://127.0.0.1:8100/api/cases/${caseId}/segment`, { method: 'POST' });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || '自动分割失败。');
-  return payload;
+  const { data } = await http.post(`/cases/${caseId}/segment`);
+  return data;
 }
 export function resultFileUrl(caseId, filename) {
-  return `http://127.0.0.1:8100/api/cases/${caseId}/results/${encodeURIComponent(filename)}`;
+  return `/cases/${caseId}/results/${encodeURIComponent(filename)}`;
 }
 
 export function originalResultFileUrl(caseId, filename) {
-  return `http://127.0.0.1:8100/api/cases/${caseId}/results-original/${encodeURIComponent(filename)}`;
+  return `/cases/${caseId}/results-original/${encodeURIComponent(filename)}`;
 }
 
 export async function fetchCaseManifest(caseId) {
-  const response = await fetch(`http://127.0.0.1:8100/api/cases/${encodeURIComponent(caseId)}`);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || '读取病例信息失败。');
-  return payload;
+  const { data } = await http.get(`/cases/${encodeURIComponent(caseId)}`);
+  return data;
 }
 
 export async function saveViewerMasks(caseId, payloads) {
@@ -73,18 +65,21 @@ export async function saveViewerMasks(caseId, payloads) {
   for (const [field, blob] of Object.entries(payloads)) {
     formData.append(field, blob, `${field}.nii.gz`);
   }
-  const response = await fetch(`http://127.0.0.1:8100/api/cases/${caseId}/viewer-masks`, {
-    method: 'POST',
-    body: formData,
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || '保存编辑后的掩膜失败。');
-  return payload;
+  const { data } = await http.post(`/cases/${caseId}/viewer-masks`, formData);
+  return data;
 }
 
 export async function predictPreparedCase(caseId) {
-  const response = await fetch(`http://127.0.0.1:8100/api/cases/${caseId}/predict`, { method: 'POST' });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'AI 预测失败。');
-  return payload;
+  const { data } = await http.post(`/cases/${caseId}/predict`);
+  return data;
+}
+
+export async function downloadResultBlob(url) {
+  const { data } = await http.get(url, { responseType: 'blob' });
+  return data;
+}
+
+export async function downloadResultArrayBuffer(url) {
+  const { data } = await http.get(url, { responseType: 'arraybuffer' });
+  return data;
 }

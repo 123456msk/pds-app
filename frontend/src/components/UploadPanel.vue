@@ -333,6 +333,8 @@ import ModalityUploadCard from "./ModalityUploadCard.vue";
 import SeriesScanResult from "./SeriesScanResult.vue";
 import { useUploadStore } from "../stores/uploadStore";
 import {
+  apiUrl,
+  downloadResultBlob,
   fetchCaseManifest,
   originalResultFileUrl,
   predictPreparedCase,
@@ -446,7 +448,7 @@ function validateInputs() {
 function downloadResults() {
   const caseId = preparedResult.value?.case_id;
   if (caseId)
-    window.open(`http://127.0.0.1:8100/api/cases/${caseId}/results`, "_blank");
+    window.open(apiUrl(`/cases/${caseId}/results`), "_blank");
 }
 function openStandaloneViewer() {
   const caseId = preparedResult.value?.case_id;
@@ -502,9 +504,7 @@ async function downloadSelectedResults(kind = "current") {
     const zip = new JSZip();
     for (const filename of selectedResultFiles.value) {
       const url = kind === "before" ? originalResultFileUrl(caseId, filename) : resultFileUrl(caseId, filename);
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`${filename} 下载失败。`);
-      zip.file(filename, await response.blob());
+      zip.file(filename, await downloadResultBlob(url));
     }
     const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
     const link = document.createElement("a");

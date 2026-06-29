@@ -332,7 +332,7 @@ import JSZip from 'jszip';
 import pako from 'pako';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { resultFileUrl, saveViewerMasks } from '../api/casePreparation';
+import { downloadResultBlob, resultFileUrl, saveViewerMasks } from '../api/casePreparation';
 
 const palette = ['#36a9e1', '#f3c74f', '#36c98f', '#ef7fa0', '#a78bfa', '#fb923c', '#22d3ee', '#e879f9'];
 const tools = [
@@ -1041,9 +1041,8 @@ async function loadCaseResults() {
   try {
     for (const filename of resultFiles) {
       try {
-        const response = await fetch(resultFileUrl(caseId, filename));
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        files.push(new File([await response.blob()], filename, { type: 'application/octet-stream' }));
+        const blob = await downloadResultBlob(resultFileUrl(caseId, filename));
+        files.push(new File([blob], filename, { type: 'application/octet-stream' }));
       } catch (error) {
         errors.push(`${filename}: ${error.message}`);
       }

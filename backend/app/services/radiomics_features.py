@@ -36,9 +36,9 @@ def _extract_zone(extractor, image_path: Path, mask_path: Path, prefix: str) -> 
 
 
 def extract_pz_tz_features(results_directory: Path, params_path: Path) -> tuple[dict, dict]:
-    image_path = results_directory / "mri.nii.gz"
-    pz_mask = results_directory / "mripz_mask.nii.gz"
-    tz_mask = results_directory / "mritz_mask.nii.gz"
+    image_path = results_directory / "pet.nii.gz"
+    pz_mask = results_directory / "petpz_mask.nii.gz"
+    tz_mask = results_directory / "pettz_mask.nii.gz"
     for required in (image_path, pz_mask, tz_mask, params_path):
         if not required.is_file():
             raise FileNotFoundError(f"预测输入文件不存在：{required}")
