@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -10,6 +11,57 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 BACKEND_DIR = ROOT / "backend"
 FRONTEND_DIR = ROOT / "frontend"
+SUPPORTED_PYTHON_VERSIONS = {(3, 10), (3, 11)}
+
+
+def python_version(python: str) -> tuple[int, int]:
+    output = subprocess.check_output(
+        [python, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+        text=True,
+    ).strip()
+    major, minor = output.split(".")
+    return int(major), int(minor)
+
+
+def is_supported_python(python: str) -> bool:
+    try:
+        return python_version(python) in SUPPORTED_PYTHON_VERSIONS
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return False
+
+
+def find_supported_python() -> list[str]:
+    candidates = []
+    if platform.system() == "Windows":
+        candidates.extend([
+            ["py", "-3.11"],
+            ["py", "-3.10"],
+        ])
+    candidates.extend([
+        ["python3.11"],
+        ["python3.10"],
+        [sys.executable],
+    ])
+
+    for command in candidates:
+        executable = command[0]
+        if executable != sys.executable and not shutil.which(executable):
+            continue
+        try:
+            version = subprocess.check_output(
+                [*command, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                text=True,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        major, minor = (int(part) for part in version.split("."))
+        if (major, minor) in SUPPORTED_PYTHON_VERSIONS:
+            return command
+
+    raise RuntimeError(
+        "Python 3.10 or 3.11 is required for backend dependencies. "
+        "Please install Python 3.11, then run this script again."
+    )
 
 
 def backend_python() -> str:
@@ -33,10 +85,19 @@ def npm_command() -> str:
 
 
 def ensure_backend_env() -> None:
-    if (BACKEND_DIR / ".venv").exists():
+    venv_dir = BACKEND_DIR / ".venv"
+    if venv_dir.exists() and is_supported_python(backend_python()):
         return
+    if venv_dir.exists():
+        current = "unknown"
+        try:
+            current = ".".join(str(part) for part in python_version(backend_python()))
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            pass
+        print(f"Removing incompatible backend virtual environment: Python {current}")
+        shutil.rmtree(venv_dir)
     print("Creating backend virtual environment...")
-    subprocess.check_call([sys.executable, "-m", "venv", str(BACKEND_DIR / ".venv")])
+    subprocess.check_call([*find_supported_python(), "-m", "venv", str(venv_dir)])
 
 
 def install_backend() -> None:
