@@ -1,25 +1,79 @@
-﻿# PDS 前列腺 MRI 智能分割诊断
+# PDS 前列腺 MRI 智能分割诊断
 
-Vue 3 + FastAPI 前列腺多模态影像工作台，支持 MRI、PSMA PET/CT DICOM 序列识别、前列腺 WG/PZ/TZ 分割、MRI 到 CT/PET 映射、双模态阅片与诊断报告。
+## 一键安装并运行
 
-## 目录
+Windows PowerShell：
 
-- `frontend/`：Vue 3、Vite、Element Plus 前端。
-- `backend/`：FastAPI、nnU-Net 分割与多模态映射服务。
-- 模型权重使用 Git LFS 管理。
+```powershell
+python .\start.py
+```
 
-## 启动
+macOS / Linux：
+
+```bash
+python3 start.py
+```
+
+脚本会自动安装后端依赖、前端依赖，并同时启动：
+
+- 后端：`http://127.0.0.1:8100/`
+- 前端：`http://127.0.0.1:5173/`
+
+按 `Ctrl+C` 可以同时停止前后端服务。
+
+## 手动安装后端
+
+Windows PowerShell：
+
+```powershell
+cd backend
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+macOS / Linux：
+
+```bash
+cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+## 手动运行后端
+
+Windows PowerShell：
 
 ```powershell
 cd backend
 .\.venv\python.exe -X utf8 run.py
 ```
 
-```powershell
-cd frontend
-npm install
-npm run dev
+macOS / Linux：
+
+```bash
+cd backend
+source .venv/bin/activate
+python -X utf8 run.py
 ```
 
-前端默认地址：`http://127.0.0.1:5173/`  
-后端默认地址：`http://127.0.0.1:8100/`
+## 手动安装前端
+
+Windows / macOS / Linux：
+
+```bash
+cd frontend
+npm install
+```
+
+## 手动运行前端
+
+Windows / macOS / Linux：
+
+```bash
+cd frontend
+npm run dev
+```
