@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parent
@@ -58,10 +59,27 @@ def find_supported_python() -> list[str]:
         if (major, minor) in SUPPORTED_PYTHON_VERSIONS:
             return command
 
-    raise RuntimeError(
-        "Python 3.10 or 3.11 is required for backend dependencies. "
-        "Please install Python 3.11, then run this script again."
-    )
+    raise RuntimeError("No Python 3.10/3.11 interpreter found.")
+
+
+def conda_command() -> Optional[str]:
+    candidates = [
+        os.environ.get("CONDA_EXE"),
+        shutil.which("conda"),
+    ]
+    if platform.system() == "Windows":
+        candidates.extend([
+            r"D:\software\environment\anaconda3\Scripts\conda.exe",
+            r"D:\software\environment\anaconda3\condabin\conda.bat",
+            r"C:\ProgramData\anaconda3\Scripts\conda.exe",
+            r"C:\ProgramData\Anaconda3\Scripts\conda.exe",
+            str(Path.home() / "anaconda3" / "Scripts" / "conda.exe"),
+            str(Path.home() / "miniconda3" / "Scripts" / "conda.exe"),
+        ])
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
 
 
 def backend_python() -> str:
@@ -97,7 +115,17 @@ def ensure_backend_env() -> None:
         print(f"Removing incompatible backend virtual environment: Python {current}")
         shutil.rmtree(venv_dir)
     print("Creating backend virtual environment...")
-    subprocess.check_call([*find_supported_python(), "-m", "venv", str(venv_dir)])
+    try:
+        subprocess.check_call([*find_supported_python(), "-m", "venv", str(venv_dir)])
+    except RuntimeError:
+        conda = conda_command()
+        if not conda:
+            raise RuntimeError(
+                "Python 3.10 or 3.11 is required for backend dependencies. "
+                "Install Python 3.11 or Conda, then run this script again."
+            )
+        print("Python 3.10/3.11 not found. Creating backend environment with Conda Python 3.11...")
+        subprocess.check_call([conda, "create", "-y", "-p", str(venv_dir), "python=3.11"])
 
 
 def install_backend() -> None:
